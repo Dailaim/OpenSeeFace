@@ -1,6 +1,6 @@
 [project]
 name = "openseeface"
-version = "1.21.1"
+version = "1.21.2"
 description = "Robust realtime face and facial landmark tracking with CPU, Intel oneAPI (OpenVINO/XPU) and AMD ROCm backends"
 readme = "README.md"
 authors = [{ name = "emilianavt" }]

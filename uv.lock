@@ -871,7 +871,7 @@ wheels = [
 
 [[package]]
 name = "openseeface"
-version = "1.21.1"
+version = "1.21.2"
 source = { virtual = "." }
 dependencies = [
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-11-openseeface-openvino' or (extra == 'extra-11-openseeface-cpu' and extra == 'extra-11-openseeface-dml') or (extra == 'extra-11-openseeface-dml' and extra == 'extra-11-openseeface-rocm') or (extra == 'extra-11-openseeface-rocm' and extra == 'group-11-openseeface-tools') or (extra == 'extra-11-openseeface-torch-rocm' and extra == 'extra-11-openseeface-xpu') or (extra == 'extra-11-openseeface-cpu' and extra != 'extra-11-openseeface-openvino' and extra == 'extra-11-openseeface-rocm') or (extra == 'extra-11-openseeface-dml' and extra != 'extra-11-openseeface-torch-rocm' and extra == 'group-11-openseeface-tools') or (extra == 'extra-11-openseeface-dml' and extra == 'extra-11-openseeface-torch-rocm' and extra != 'extra-11-openseeface-xpu' and extra == 'group-11-openseeface-tools')" },
