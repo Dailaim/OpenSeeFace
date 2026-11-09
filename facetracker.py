@@ -195,6 +195,7 @@ if type(input_reader.reader) == VideoReader:
 log = None
 out = None
 first = True
+mp_pool = None
 height = 0
 width = 0
 tracker = None
@@ -291,11 +292,20 @@ try:
                 out = cv2.VideoWriter(args.video_out, cv2.VideoWriter_fourcc('F','F','V','1'), args.video_fps, (width * args.video_scale, height * args.video_scale))
 
         try:
+            # MediaPipe (hands / blendshape face) and the OpenSeeFace face run on separate GPU
+            # sessions, so overlap them: the frame then costs max(a, b) instead of a + b.
+            # The frame is only read by both; drawing on it happens after both are done.
+            mp_future = None
             if mp_tracking is not None:
-                for mp_packet in mp_tracking.process(frame, now, camera_id, width, height):
-                    send_packet(mp_packet)
+                if mp_pool is None:
+                    from concurrent.futures import ThreadPoolExecutor
+                    mp_pool = ThreadPoolExecutor(max_workers=1)
+                mp_future = mp_pool.submit(mp_tracking.process, frame, now, camera_id, width, height)
             inference_start = time.perf_counter()
             faces = tracker.predict(frame) if mp_tracking is None or not mp_tracking.replaces_osf_face else []
+            if mp_future is not None:
+                for mp_packet in mp_future.result():
+                    send_packet(mp_packet)
             if len(faces) > 0:
                 inference_time = (time.perf_counter() - inference_start)
                 total_tracking_time += inference_time

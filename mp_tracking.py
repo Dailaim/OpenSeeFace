@@ -132,8 +132,12 @@ class MediaPipeTracking:
         if self.hand_landmarker is None and self.face_landmarker is None:
             return packets
         # The VTS tracker feeds MediaPipe a horizontally mirrored image
-        rgb = np.ascontiguousarray(frame[:, ::-1, ::-1])  # mirror + BGR->RGB in one single-threaded copy
-        image = rgb if self.engine == "gpu" else self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb)
+        if self.engine == "gpu":
+            import mp_gpu
+            image = mp_gpu.MirroredBGR(frame)  # mirrored lazily inside the small crops (no full-frame copy)
+        else:
+            rgb = np.ascontiguousarray(frame[:, ::-1, ::-1])  # mirror + BGR->RGB in one single-threaded copy
+            image = self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb)
         ts = self._timestamp(now)
         face_future = None
         if self.pool is not None:

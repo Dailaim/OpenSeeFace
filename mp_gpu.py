@@ -60,16 +60,34 @@ class Rect:
         return inter / union if union > 0 else 0.0
 
 
+class MirroredBGR:
+    """A camera frame (BGR) that the pipeline treats as its horizontally mirrored RGB version.
+
+    Mirroring + BGR->RGB on a full 2560x1440 frame costs ~5 ms of CPU per frame, while the
+    networks only ever see 128-256 px crops of it. crop_rect/letterbox fold the mirror into
+    their affine transform / small resized image instead, so the full frame is never copied.
+    """
+    __slots__ = ("bgr", "shape")
+
+    def __init__(self, bgr):
+        self.bgr = bgr
+        self.shape = bgr.shape
+
+
 def crop_rect(image, rect, size):
-    """Rotated ROI crop -> (size, size, 3) float32 in [0, 1] (ImageToTensorCalculator)."""
+    """Rotated ROI crop -> (size, size, 3) RGB uint8 (ImageToTensorCalculator)."""
     H, W = image.shape[:2]
     sw, sh = rect.w * W, rect.h * H
     cx, cy = rect.cx * W, rect.cy * H
     c, s = math.cos(rect.rot), math.sin(rect.rot)
     m = np.array([[c * sw / size, -s * sh / size, cx - 0.5 * c * sw + 0.5 * s * sh],
                   [s * sw / size, c * sh / size, cy - 0.5 * s * sw - 0.5 * c * sh]], np.float32)
-    out = cv2.warpAffine(image, m, (size, size), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REPLICATE)
-    return out
+    if isinstance(image, MirroredBGR):
+        # sample x' = (W - 1) - x in the original frame, then BGR -> RGB on the small crop only
+        m[0] = (-m[0, 0], -m[0, 1], (W - 1) - m[0, 2])
+        out = cv2.warpAffine(image.bgr, m, (size, size), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REPLICATE)
+        return out[:, :, ::-1]
+    return cv2.warpAffine(image, m, (size, size), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REPLICATE)
 
 
 def letterbox(image, size):
@@ -78,9 +96,13 @@ def letterbox(image, size):
     S = max(W, H)
     scale = size / S
     nw, nh = max(1, round(W * scale)), max(1, round(H * scale))
-    out = np.zeros((size, size, 3), image.dtype)
     ox, oy = (size - nw) // 2, (size - nh) // 2
-    out[oy:oy + nh, ox:ox + nw] = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    if isinstance(image, MirroredBGR):
+        small = cv2.resize(image.bgr, (nw, nh), interpolation=cv2.INTER_LINEAR)[:, ::-1, ::-1]
+    else:
+        small = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    out = np.zeros((size, size, 3), small.dtype)
+    out[oy:oy + nh, ox:ox + nw] = small
     return out, (S, ox / scale, oy / scale)
 
 
