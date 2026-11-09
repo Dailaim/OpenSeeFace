@@ -59,6 +59,7 @@ parser.add_argument("--detection-mp-face-conf", type=float, help="Minimum confid
 parser.add_argument("--detection-mp-hand-conf", type=float, help="Minimum confidence for MediaPipe hand detection", default=0.5)
 parser.add_argument("--detail-mp-log", type=int, help="When set to 1, detailed MediaPipe logging is printed", default=0)
 parser.add_argument("--mp-engine", help="Where the MediaPipe hand/face models run: gpu (selected backend, see --backend), mediapipe (mediapipe package, CPU) or auto", default=os.environ.get("OSF_MP_ENGINE", "auto"), choices=["auto", "gpu", "mediapipe"])
+parser.add_argument("--mp-device", help="Device for the MediaPipe models when they run on the GPU backend, if different from --device. E.g. --device GPU.0 --mp-device GPU.1 puts the OpenSeeFace face on the integrated GPU and MediaPipe on the discrete one. Defaults to OSF_MP_DEVICE or --device", default=os.environ.get("OSF_MP_DEVICE"))
 parser.add_argument("--vts-protocol", type=int, help="VTube Studio packet framing: camera id appended to face packets and every packet sent to ports port-6..port+6. -1 = auto (on when VTube Studio's MediaPipe options are passed)", default=-1, choices=[-1, 0, 1])
 parser.add_argument("--list-backends", action="store_true", help="List the inference backends available in this environment and quit")
 if os.name == 'nt':
@@ -277,9 +278,9 @@ try:
             mp_tracking = None
             if args.hands != 0 or args.mediapipe == 1:
                 from mp_tracking import MediaPipeTracking
-                mp_tracking = MediaPipeTracking(model_dir=args.model_dir, hands=args.hands, face=args.mediapipe == 1, hand_conf=args.detection_mp_hand_conf, face_conf=args.detection_mp_face_conf, log=args.detail_mp_log == 1, engine=args.mp_engine)
+                mp_tracking = MediaPipeTracking(model_dir=args.model_dir, hands=args.hands, face=args.mediapipe == 1, hand_conf=args.detection_mp_hand_conf, face_conf=args.detection_mp_face_conf, log=args.detail_mp_log == 1, engine=args.mp_engine, device=args.mp_device)
                 if args.silent == 0:
-                    print(f"MediaPipe engine: {mp_tracking.engine}")
+                    print(f"MediaPipe engine: {mp_tracking.engine}" + (f" on {args.mp_device}" if args.mp_device and mp_tracking.engine == "gpu" else ""))
             camera_id = try_int(args.capture) if isinstance(try_int(args.capture), int) else 0
 
             def send_packet(data):

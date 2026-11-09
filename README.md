@@ -74,6 +74,8 @@ Then:
     uv run facetracker.py -c 0 --backend torch --device xpu
     uv run python tools/check_backends.py                    # accuracy vs CPU + latency per model
 
+To free the discrete GPU, the OpenSeeFace face and the MediaPipe models can use different devices: `--device GPU.0 --mp-device GPU.1` (or the `OSF_DEVICE` / `OSF_MP_DEVICE` environment variables, which VTube Studio passes through) runs the face on the integrated GPU and hands/blendshapes on the discrete one. On an i5-12600K (UHD 770) + Arc A770 at 2560x1440 with `--hands 1`, a frame takes 9.0 ms with both on the A770, 13.9 ms split, and 21.8 ms with both on the UHD 770, with identical results.
+
 Other options: `--device` (OpenVINO device such as `GPU.1`/`NPU`, GPU index for `rocm`/`dml`, torch device such as `xpu:0` or `cuda:0`), `--precision fp16` (not recommended: it barely helps these small models and adds error), `OSF_CACHE_DIR` to cache compiled GPU graphs and `OSF_TORCH_COMPILE=1` to use `torch.compile` (needs a C compiler) instead of a frozen TorchScript trace.
 
 If a GPU backend fails to load, the tracker stops with an error instead of silently running on the CPU.

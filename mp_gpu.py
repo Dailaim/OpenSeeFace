@@ -222,12 +222,12 @@ class OneEuro:
         return self.x / scale
 
 
-def _session(model_dir, name, batch=1):
+def _session(model_dir, name, batch=1, device=None):
     if backends.resolve_backend() == "torch":
         # On Intel Arc (torch 2.15 XPU) one of these converted graphs triggers a device-side
         # assert that resets the GPU driver (and once rebooted the PC). Never run them there.
         raise RuntimeError("The MediaPipe models are not supported on the torch backend; use openvino/rocm/dml or --mp-engine mediapipe")
-    return backends.create_session(os.path.join(model_dir, "portable", name), threads=1, batch=batch)
+    return backends.create_session(os.path.join(model_dir, "portable", name), threads=1, batch=batch, device=device)
 
 
 def _run(session, tensor):
@@ -244,9 +244,9 @@ def _lm_objects(points):
 class HandLandmarkerGPU:
     PALM_SUBSET = [0, 1, 2, 3, 5, 6, 9, 10, 13, 14, 17, 18]
 
-    def __init__(self, model_dir, num_hands=2, min_detection=0.5, min_presence=0.5, min_tracking=0.5, smooth=False):
-        self.detector = _session(model_dir, "mp_hand_detector.onnx")
-        self.landmarker = _session(model_dir, "mp_hand_landmarks.onnx")
+    def __init__(self, model_dir, num_hands=2, min_detection=0.5, min_presence=0.5, min_tracking=0.5, smooth=False, device=None):
+        self.detector = _session(model_dir, "mp_hand_detector.onnx", device=device)
+        self.landmarker = _session(model_dir, "mp_hand_landmarks.onnx", device=device)
         self.anchors = ssd_anchors(192)
         self.num_hands = num_hands
         self.min_detection, self.min_presence, self.min_tracking = min_detection, min_presence, min_tracking
@@ -434,10 +434,10 @@ class FaceGeometry:
 
 
 class FaceLandmarkerGPU:
-    def __init__(self, model_dir, min_detection=0.5, min_presence=0.5, min_tracking=0.5, smooth=False):
-        self.detector = _session(model_dir, "mp_face_detector.onnx")
-        self.landmarker = _session(model_dir, "mp_face_landmarks.onnx")
-        self.blendshapes = _session(model_dir, "mp_face_blendshapes.onnx")
+    def __init__(self, model_dir, min_detection=0.5, min_presence=0.5, min_tracking=0.5, smooth=False, device=None):
+        self.detector = _session(model_dir, "mp_face_detector.onnx", device=device)
+        self.landmarker = _session(model_dir, "mp_face_landmarks.onnx", device=device)
+        self.blendshapes = _session(model_dir, "mp_face_blendshapes.onnx", device=device)
         self.geometry = FaceGeometry(os.path.join(model_dir, "portable", "mp_face_geometry.npz"))
         self.anchors = ssd_anchors(128)
         self.min_detection, self.min_presence, self.min_tracking = min_detection, min_presence, min_tracking

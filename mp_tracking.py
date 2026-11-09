@@ -56,7 +56,7 @@ def find_model(name, model_dir):
 
 
 class MediaPipeTracking:
-    def __init__(self, model_dir=None, hands=0, face=False, hand_conf=0.5, face_conf=0.3, log=False, engine="auto"):
+    def __init__(self, model_dir=None, hands=0, face=False, hand_conf=0.5, face_conf=0.3, log=False, engine="auto", device=None):
         """engine: "gpu" runs the converted models on the selected OpenSeeFace backend (mp_gpu.py),
         "mediapipe" uses the mediapipe package (CPU only on Windows), "auto" picks gpu unless the
         backend is cpu or the converted models are missing."""
@@ -68,13 +68,14 @@ class MediaPipeTracking:
         self.hand_landmarker = None
         self.face_landmarker = None
         self.engine = self._pick_engine(engine, model_dir)
+        self.device = device
         if self.engine == "gpu":
             import mp_gpu
             base = _model_base(model_dir)
             if self.track_hands:
-                self.hand_landmarker = mp_gpu.HandLandmarkerGPU(base, 2, hand_conf, hand_conf, hand_conf)
+                self.hand_landmarker = mp_gpu.HandLandmarkerGPU(base, 2, hand_conf, hand_conf, hand_conf, device=device)
             if self.track_face:
-                self.face_landmarker = mp_gpu.FaceLandmarkerGPU(base, face_conf, face_conf, face_conf)
+                self.face_landmarker = mp_gpu.FaceLandmarkerGPU(base, face_conf, face_conf, face_conf, device=device)
         else:
             import mediapipe as mp
             from mediapipe.tasks.python import BaseOptions

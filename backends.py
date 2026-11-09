@@ -181,8 +181,8 @@ def _input_spec(path, batch):
         return None
 
 
-def _ort_provider_list(backend, path=None, batch=1):
-    dev = _config["device"]
+def _ort_provider_list(backend, path=None, batch=1, device=None):
+    dev = device or _config["device"]
     fp16 = _config["precision"] == "fp16"
     cache = _config["cache_dir"]
     avail = _ort_providers()
@@ -284,12 +284,13 @@ _EXPECTED_PROVIDERS = {
 }
 
 
-def create_session(path, threads=1, batch=1):
+def create_session(path, threads=1, batch=1, device=None):
+    """device overrides the configured device for this session only (e.g. OpenVINO "GPU.0")."""
     backend = resolve_backend()
     if backend == "torch":
         return TorchSession(path)
     ort = _ort()
-    session = ort.InferenceSession(path, sess_options=session_options(threads), providers=_ort_provider_list(backend, path, batch))
+    session = ort.InferenceSession(path, sess_options=session_options(threads), providers=_ort_provider_list(backend, path, batch, device))
     # ORT silently falls back to CPU when a provider fails to load; make that loud.
     active = session.get_providers()[0]
     expected = _EXPECTED_PROVIDERS.get(backend)
