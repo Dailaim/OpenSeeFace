@@ -24,7 +24,7 @@ I ran OpenSeeFace on a sample clip from the video presentation for [3D Face Reco
 
 A sample Unity project for VRM based avatar animation can be found [here](https://github.com/emilianavt/OpenSeeFaceSample).
 
-The face tracking itself is done by the `facetracker.py` Python 3.7 script. It is a commandline program, so you should start it manually from cmd or write a batch file to start it. If you downloaded a release and are on Windows, you can run the `facetracker.exe` inside the `Binary` folder without having Python installed. You can also use the `run.bat` inside the `Binary` folder for a basic demonstration of the tracker.
+The face tracking itself is done by the `facetracker.py` Python 3.12/3.13 script. It is a commandline program, so you should start it manually from cmd or write a batch file to start it. If you downloaded a release and are on Windows, you can run the `facetracker.exe` inside the `Binary` folder without having Python installed. You can also use the `run.bat` inside the `Binary` folder for a basic demonstration of the tracker.
 
 The script will perform the tracking on webcam input or video file and send the tracking data over UDP. This design also allows tracking to be done on a separate PC from the one who uses the tracking information. This can be useful to enhance performance and to avoid accidentially revealing camera footage.
 
@@ -48,7 +48,51 @@ This way the tracking script will output its own tracking visualization while al
 
 One user has reported that python failed to load the onnxruntime library on Linux, which was fixable with this command, run from within the OpenSeeFace folder:
 
-    execstack -c .venv/lib/python3.9/site-packages/onnxruntime/capi/onnxruntime_pybind11_state.cpython-39-x86_64-linux-gnu.so
+    execstack -c .venv/lib/python3.13/site-packages/onnxruntime/capi/onnxruntime_pybind11_state.cpython-313-x86_64-linux-gnu.so
+
+## GPU backends: Intel oneAPI (OpenVINO / XPU) and AMD ROCm
+
+The tracker can run its models on the GPU. Pick the backend with `--backend` (or the `OSF_BACKEND` environment variable, which is useful when another program such as VTube Studio launches `facetracker.exe` with its own arguments). The default is `auto`: the first available GPU backend among `openvino`, `rocm`, `torch` and `dml`, falling back to `cpu`.
+
+| Backend | Hardware | Install |
+|---|---|---|
+| `cpu` | any CPU (original behaviour) | `uv sync --extra cpu` |
+| `openvino` | Intel Arc / Iris Xe / Core Ultra (oneAPI stack, Windows and Linux) | `uv sync --extra openvino` |
+| `rocm` | AMD GPUs through MIGraphX (Linux, needs ROCm 7.x + MIGraphX on the host) | `uv sync --extra rocm` |
+| `torch` | PyTorch 2.15 on Intel XPU (`--extra xpu`) or PyTorch on ROCm 7.2 (`--extra torch-rocm`, Linux) | `uv sync --extra openvino --extra xpu` |
+| `dml` | any DirectX 12 GPU on Windows | `uv sync --extra dml` |
+
+The GPU backends need standard-ONNX copies of the models (the shipped ones contain an ONNX Runtime CPU-only fused op). Generate them once with:
+
+    uv run --with onnx --with onnxruntime python tools/portable_models.py
+
+Then:
+
+    uv run facetracker.py --list-backends
+    uv run facetracker.py -c 0 --backend openvino            # picks the discrete Arc GPU automatically
+    uv run facetracker.py -c 0 --backend openvino --device GPU.0
+    uv run facetracker.py -c 0 --backend torch --device xpu
+    uv run python tools/check_backends.py                    # accuracy vs CPU + latency per model
+
+Other options: `--device` (OpenVINO device such as `GPU.1`/`NPU`, GPU index for `rocm`/`dml`, torch device such as `xpu:0` or `cuda:0`), `--precision fp16` (not recommended: it barely helps these small models and adds error), `OSF_CACHE_DIR` to cache compiled GPU graphs and `OSF_TORCH_COMPILE=1` to use `torch.compile` (needs a C compiler) instead of a frozen TorchScript trace.
+
+If a GPU backend fails to load, the tracker stops with an error instead of silently running on the CPU.
+
+### MediaPipe hands and blendshapes (VTube Studio compatible)
+
+With the `mediapipe` extra (`uv sync --extra openvino --extra mediapipe`) and the models from `uv run python tools/fetch_mediapipe_models.py`, the tracker supports the same modes as the tracker bundled with VTube Studio:
+
+* `--hands 1`: OpenSeeFace face tracking plus MediaPipe hand tracking (up to 2 hands, 21 points each)
+* `--hands 2`: hand tracking only
+* `--mediapipe 1`: MediaPipe face tracking with 52 blendshapes and 478 points instead of OpenSeeFace
+
+`--detection-mp-face-conf`, `--detection-mp-hand-conf` and `--detail-mp-log` are accepted as well. When any of these options are present, the VTube Studio packet framing is used: the camera id is appended to OpenSeeFace face packets and every packet is sent to ports `port-6` to `port+6` (force it with `--vts-protocol 1` or `0`). The packet layouts are documented in `mp_tracking.py`. With a GPU backend (`openvino`, `rocm` or `dml`) the MediaPipe networks run on the GPU too: `tools/convert_mediapipe_models.py` converts the `.task` bundles to ONNX (it needs TensorFlow, which it installs in a temporary environment) and `mp_gpu.py` reimplements MediaPipe's graph logic (anchors, NMS, rotated crops, ROI tracking, blendshapes and the face pose matrix). On the test clip it matches the `mediapipe` package to about 0.5 px, and on an Arc A770 it takes ~10 ms per frame for face + hands versus ~19 ms on the CPU. `--mp-engine mediapipe` (or the `cpu` backend) uses the `mediapipe` package instead, which only runs on the CPU on Windows.
+
+**Do not use the `torch` backend for MediaPipe:** with torch 2.15 XPU on an Arc A770 one of the converted graphs hits a device-side assert that resets the GPU driver (it rebooted the test PC once), so the tracker refuses that combination. The OpenSeeFace models themselves ran fine on torch XPU, but `openvino` is faster and the recommended Intel backend.
+
+### Using it with VTube Studio
+
+Build the executable with `make_exe.bat openvino` (or `cpu`, `dml`, `xpu`). Back up the `OpenSeeFace` folder that ships with VTube Studio, then copy the contents of `distacetracker` over it. VTube Studio keeps passing its usual arguments, and the tracker uses the `auto` backend unless `OSF_BACKEND` is set in the environment.
 
 ## Running from Unity
 
@@ -139,7 +183,7 @@ When distributing it, you should also distribute the `Licenses` folder along wit
 
 The release builds contain a custom build of ONNX Runtime without telemetry.
 
-# Dependencies (Python 3.6 - 3.9)
+# Dependencies (Python 3.12 - 3.13)
 
 Note: I recommend installing the dependencies using `uv` as described above.
 

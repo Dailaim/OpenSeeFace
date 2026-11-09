@@ -1,7 +1,7 @@
 import sys
 import numpy as np
 import cv2
-import onnxruntime
+import backends
 import time
 import queue
 import threading
@@ -60,14 +60,7 @@ def worker_thread(rfd, frame):
 
 class RetinaFaceDetector():
     def __init__(self, model_path="models/retinaface_640x640_opt.onnx", json_path="models/priorbox_640x640.json", threads=4, min_conf=0.4, nms_threshold=0.4, top_k=1, res=(640, 640)):
-        options = onnxruntime.SessionOptions()
-        options.inter_op_num_threads = 1
-        options.intra_op_num_threads = threads
-        options.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
-        options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-        options.log_severity_level = 3
-        providersList = onnxruntime.capi._pybind_state.get_available_providers()
-        self.session = onnxruntime.InferenceSession(model_path, sess_options=options, providers=providersList)
+        self.session = backends.create_session(model_path, threads=threads)
         self.res_w, self.res_h = res
         with open(json_path, "r") as prior_file:
             self.priorbox = np.array(json.loads(prior_file.read()))

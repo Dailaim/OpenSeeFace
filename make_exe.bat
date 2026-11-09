@@ -1,28 +1,39 @@
-echo "Started"
+@echo off
+:: Usage: make_exe.bat [cpu|openvino|dml|xpu]   (default: openvino)
+:: Builds dist\facetracker with the chosen inference backend bundled.
+setlocal
+set FLAVOR=%1
+if "%FLAVOR%"=="" set FLAVOR=openvino
+set ROOT=%~dp0
 
-:: A venv is used so it's easy to add the onnxruntime dll to the binary
+where uv >nul 2>nul || (echo Installing uv & pip install uv)
 
-echo "Installing uv"
-pip install uv
+echo Installing dependencies (%FLAVOR%)
+if "%FLAVOR%"=="xpu" (
+    uv sync --locked --extra openvino --extra xpu --extra mediapipe --group build || exit /b 1
+) else (
+    uv sync --locked --extra %FLAVOR% --extra mediapipe --group build || exit /b 1
+)
 
-echo "Installing dependencies"
-uv sync --locked
-uv pip install pyinstaller==6.22.3
+echo Fetching MediaPipe models
+uv run --no-sync python tools\fetch_mediapipe_models.py || exit /b 1
+echo Converting MediaPipe models to ONNX for the GPU backends (uses a temporary TensorFlow env)
+uv run --no-sync python tools\convert_mediapipe_models.py || exit /b 1
 
-echo "Running pyinstaller"
-uv run pyinstaller facetracker.py --clean ^
-    --onedir ^
-    --add-binary dshowcapture/*.dll;. ^
-    --add-binary escapi/*.dll;. ^
-    --add-binary .venv/lib/site-packages/onnxruntime/capi/*.dll;onnxruntime\capi ^
-    --add-binary msvcp140.dll;. ^
-    --add-binary vcomp140.dll;. ^
-    --add-binary concrt140.dll;. ^
-    --add-binary vccorlib140.dll;. ^
-    --add-binary run.bat;.
+echo Generating portable models
+uv run --no-sync --with onnx python tools\portable_models.py --no-verify || exit /b 1
 
-echo "Deleting opencv dll"
-del /f dist\facetracker\_internal\cv2\opencv_videoio_*
+set EXTRA=--collect-all onnxruntime --collect-all mediapipe
+if "%FLAVOR%"=="openvino" set EXTRA=%EXTRA% --collect-all openvino
+if "%FLAVOR%"=="xpu" set EXTRA=%EXTRA% --collect-all openvino --collect-all onnx2torch --collect-all torch
 
-echo "Finished"
+echo Running pyinstaller
+uv run --no-sync pyinstaller facetracker.py --clean --noconfirm --specpath build --onedir %EXTRA% --add-binary "%ROOT%dshowcapture\*.dll;." --add-binary "%ROOT%escapi\*.dll;." --add-binary "%ROOT%run.bat;." || exit /b 1
 
+echo Copying models
+xcopy /e /i /y models dist\facetracker\models >nul
+
+echo Deleting opencv videoio dlls
+del /f /q dist\facetracker\_internal\cv2\opencv_videoio_* 2>nul
+
+echo Finished: dist\facetracker

@@ -1,14 +1,60 @@
 [project]
 name = "openseeface"
-version = "1.20.4"
-description = "Robust realtime face and facial landmark tracking on CPU with Unity integration"
+version = "1.21.0"
+description = "Robust realtime face and facial landmark tracking with CPU, Intel oneAPI (OpenVINO/XPU) and AMD ROCm backends"
 readme = "README.md"
-authors = ["emilianavt"]
+authors = [{ name = "emilianavt" }]
 license = "BSD-2-Clause"
-requires-python = "==3.9.*"
+requires-python = ">=3.12,<3.14"
 dependencies = [
-    "numpy==1.21.3",
-    "onnxruntime==1.9.0",
-    "opencv-python==4.5.*",
-    "pillow==10.2.0",
+    "numpy>=2.2",
+    "opencv-contrib-python>=4.12",  # superset of opencv-python; mediapipe requires the contrib build
+    "pillow>=11.3",
 ]
+
+[project.optional-dependencies]
+# Pick ONE ONNX Runtime flavour (they all install the same `onnxruntime` module).
+cpu = ["onnxruntime>=1.23"]
+# Intel oneAPI stack: Arc / Iris Xe / Core Ultra GPU+NPU through OpenVINO.
+openvino = ["onnxruntime-openvino>=1.23", "openvino==2025.4.*", "onnx>=1.17"]
+# AMD ROCm through MIGraphX (Linux; needs ROCm 7.x + MIGraphX installed on the host).
+rocm = ["onnxruntime-migraphx>=1.23 ; sys_platform == 'linux'"]
+# Generic DirectX 12 fallback on Windows.
+dml = ["onnxruntime-directml>=1.23 ; sys_platform == 'win32'"]
+# MediaPipe hands + blendshape face tracking (VTube Studio --hands / --mediapipe modes).
+mediapipe = ["mediapipe>=1.2"]
+# PyTorch backends (can be combined with one of the ONNX Runtime flavours above).
+xpu = ["torch>=2.9", "triton-xpu ; sys_platform == 'linux' or sys_platform == 'win32'", "onnx>=1.17", "onnx2torch>=1.5"]
+torch-rocm = ["torch>=2.9 ; sys_platform == 'linux'", "triton-rocm ; sys_platform == 'linux'", "onnx>=1.17", "onnx2torch>=1.5"]
+
+[dependency-groups]
+# tools/portable_models.py
+tools = ["onnx>=1.17", "onnxruntime>=1.23"]
+build = ["pyinstaller>=6.16"]
+
+[tool.uv]
+conflicts = [
+    [{ extra = "cpu" }, { extra = "openvino" }, { extra = "rocm" }, { extra = "dml" }],
+    [{ extra = "xpu" }, { extra = "torch-rocm" }],
+    [{ group = "tools" }, { extra = "openvino" }],
+    [{ group = "tools" }, { extra = "rocm" }],
+    [{ group = "tools" }, { extra = "dml" }],
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-xpu", extra = "xpu" },
+    { index = "pytorch-rocm", extra = "torch-rocm" },
+]
+triton-xpu = [{ index = "pytorch-xpu", extra = "xpu" }]
+triton-rocm = [{ index = "pytorch-rocm", extra = "torch-rocm" }]
+
+[[tool.uv.index]]
+name = "pytorch-xpu"
+url = "https://download.pytorch.org/whl/xpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm7.2"
+explicit = true

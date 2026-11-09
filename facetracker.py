@@ -49,11 +49,26 @@ parser.add_argument("--face-id-offset", type=int, help="When set, this offset is
 parser.add_argument("--repeat-video", type=int, help="When set to 1 and a video file was specified with -c, the tracker will loop the video until interrupted", default=0)
 parser.add_argument("--dump-points", type=str, help="When set to a filename, the current face 3D points are made symmetric and dumped to the given file when quitting the visualization with the \"q\" key", default="")
 parser.add_argument("--benchmark", type=int, help="When set to 1, the different tracking models are benchmarked, starting with the best and ending with the fastest and with gaze tracking disabled for models with negative IDs", default=0)
+parser.add_argument("--backend", help="Inference backend: auto, cpu, openvino (Intel oneAPI GPU/NPU), rocm (AMD MIGraphX/ROCm), dml (DirectML) or torch (PyTorch on XPU or ROCm). Defaults to the OSF_BACKEND environment variable or auto, so hosts like VTube Studio that launch the tracker with their own arguments still get GPU inference", default=os.environ.get("OSF_BACKEND", "auto"), choices=["auto", "cpu", "openvino", "rocm", "dml", "torch"])
+parser.add_argument("--device", help="Backend device: OpenVINO device type (GPU, GPU.1, NPU, CPU, AUTO:GPU,CPU), GPU index for rocm/dml, or torch device (xpu, xpu:1, cuda:0). Defaults to OSF_DEVICE or the backend default", default=os.environ.get("OSF_DEVICE"))
+parser.add_argument("--precision", help="GPU inference precision", default=os.environ.get("OSF_PRECISION", "fp32"), choices=["fp32", "fp16"])
+parser.add_argument("--hands", type=int, help="MediaPipe hand tracking: 0 = off, 1 = OpenSeeFace face + hands, 2 = hands only (VTube Studio compatible)", default=0, choices=[0, 1, 2])
+parser.add_argument("--mediapipe", type=int, help="When set to 1, MediaPipe face tracking with blendshapes is used instead of OpenSeeFace (VTube Studio compatible)", default=0)
+parser.add_argument("--hands-new", type=int, help="Accepted for VTube Studio compatibility; the MediaPipe Tasks hand tracker is always used", default=1)
+parser.add_argument("--detection-mp-face-conf", type=float, help="Minimum confidence for MediaPipe face detection", default=0.3)
+parser.add_argument("--detection-mp-hand-conf", type=float, help="Minimum confidence for MediaPipe hand detection", default=0.5)
+parser.add_argument("--detail-mp-log", type=int, help="When set to 1, detailed MediaPipe logging is printed", default=0)
+parser.add_argument("--mp-engine", help="Where the MediaPipe hand/face models run: gpu (selected backend, see --backend), mediapipe (mediapipe package, CPU) or auto", default=os.environ.get("OSF_MP_ENGINE", "auto"), choices=["auto", "gpu", "mediapipe"])
+parser.add_argument("--vts-protocol", type=int, help="VTube Studio packet framing: camera id appended to face packets and every packet sent to ports port-6..port+6. -1 = auto (on when VTube Studio's MediaPipe options are passed)", default=-1, choices=[-1, 0, 1])
+parser.add_argument("--list-backends", action="store_true", help="List the inference backends available in this environment and quit")
 if os.name == 'nt':
     parser.add_argument("--use-dshowcapture", type=int, help="When set to 1, libdshowcapture will be used for video input instead of OpenCV", default=1)
     parser.add_argument("--blackmagic-options", type=str, help="When set, this additional option string is passed to the blackmagic capture library", default=None)
     parser.add_argument("--priority", type=int, help="When set, the process priority will be changed", default=None, choices=[0, 1, 2, 3, 4, 5])
-args = parser.parse_args()
+# Hosts like VTube Studio pass extra options for their own forks (e.g. --detection-mp-face-conf); ignore them
+args, _unknown_args = parser.parse_known_args()
+if args.vts_protocol == -1:
+    args.vts_protocol = 1 if any(x.startswith(("--detection-mp-", "--detail-mp-log", "--hands", "--mediapipe")) for x in sys.argv[1:]) else 0
 
 os.environ["OMP_NUM_THREADS"] = str(args.max_threads)
 
@@ -132,6 +147,12 @@ import struct
 import json
 from input_reader import InputReader, VideoReader, DShowCaptureReader, try_int
 from tracker import Tracker, get_model_base_path
+import backends
+
+if args.list_backends:
+    print("Available backends: " + ", ".join(backends.available_backends()))
+    sys.exit(0)
+backends.configure(args.backend, device=args.device, precision=args.precision, cache_dir=os.environ.get("OSF_CACHE_DIR"))
 
 if args.benchmark > 0:
     model_base_path = get_model_base_path(args.model_dir)
@@ -252,12 +273,29 @@ try:
             height, width, channels = frame.shape
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             tracker = Tracker(width, height, threshold=args.threshold, max_threads=args.max_threads, max_faces=args.faces, discard_after=args.discard_after, scan_every=args.scan_every, silent=False if args.silent == 0 else True, model_type=args.model, model_dir=args.model_dir, no_gaze=False if args.gaze_tracking != 0 and args.model != -1 else True, detection_threshold=args.detection_threshold, use_retinaface=args.scan_retinaface, max_feature_updates=args.max_feature_updates, static_model=True if args.no_3d_adapt == 1 else False, try_hard=args.try_hard == 1)
+            mp_tracking = None
+            if args.hands != 0 or args.mediapipe == 1:
+                from mp_tracking import MediaPipeTracking
+                mp_tracking = MediaPipeTracking(model_dir=args.model_dir, hands=args.hands, face=args.mediapipe == 1, hand_conf=args.detection_mp_hand_conf, face_conf=args.detection_mp_face_conf, log=args.detail_mp_log == 1, engine=args.mp_engine)
+                if args.silent == 0:
+                    print(f"MediaPipe engine: {mp_tracking.engine}")
+            camera_id = try_int(args.capture) if isinstance(try_int(args.capture), int) else 0
+
+            def send_packet(data):
+                if args.vts_protocol == 1:
+                    for offset in range(-6, 7):
+                        sock.sendto(data, (target_ip, target_port + offset))
+                else:
+                    sock.sendto(data, (target_ip, target_port))
             if args.video_out is not None:
                 out = cv2.VideoWriter(args.video_out, cv2.VideoWriter_fourcc('F','F','V','1'), args.video_fps, (width * args.video_scale, height * args.video_scale))
 
         try:
+            if mp_tracking is not None:
+                for mp_packet in mp_tracking.process(frame, now, camera_id, width, height):
+                    send_packet(mp_packet)
             inference_start = time.perf_counter()
-            faces = tracker.predict(frame)
+            faces = tracker.predict(frame) if mp_tracking is None or not mp_tracking.replaces_osf_face else []
             if len(faces) > 0:
                 inference_time = (time.perf_counter() - inference_start)
                 total_tracking_time += inference_time
@@ -360,7 +398,9 @@ try:
                     log.flush()
 
             if detected and len(faces) < 40:
-                sock.sendto(packet, (target_ip, target_port))
+                if args.vts_protocol == 1:
+                    packet.extend(bytearray(struct.pack("i", camera_id)))
+                send_packet(packet)
 
             if out is not None:
                 video_frame = frame

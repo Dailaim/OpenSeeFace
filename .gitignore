@@ -7,3 +7,7 @@ Samples/*
 CSharp/*
 VSeeFace/*
 .venv/*
+models/portable/
+models/*.task
+dist/
+build/

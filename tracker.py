@@ -2,7 +2,7 @@ import os
 import numpy as np
 import math
 import cv2
-import onnxruntime
+import backends
 import time
 import queue
 import threading
@@ -495,12 +495,6 @@ def get_model_base_path(model_dir):
 
 class Tracker():
     def __init__(self, width, height, model_type=3, detection_threshold=0.6, threshold=None, max_faces=1, discard_after=5, scan_every=3, bbox_growth=0.0, max_threads=4, silent=False, model_dir=None, no_gaze=False, use_retinaface=False, max_feature_updates=0, static_model=False, feature_level=2, try_hard=False):
-        options = onnxruntime.SessionOptions()
-        options.inter_op_num_threads = 1
-        options.intra_op_num_threads = min(max_threads,4)
-        options.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
-        options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-        options.log_severity_level = 3
         self.model_type = model_type
         self.models = [
             "lm_model0_opt.onnx",
@@ -523,43 +517,31 @@ class Tracker():
             if model_type < 0:
                 threshold = 0.87
 
-        self.retinaface = RetinaFaceDetector(model_path=os.path.join(model_base_path, "retinaface_640x640_opt.onnx"), json_path=os.path.join(model_base_path, "priorbox_640x640.json"), threads=max(max_threads,4), top_k=max_faces, res=(640, 640))
-        self.retinaface_scan = RetinaFaceDetector(model_path=os.path.join(model_base_path, "retinaface_640x640_opt.onnx"), json_path=os.path.join(model_base_path, "priorbox_640x640.json"), threads=2, top_k=max_faces, res=(640, 640))
+        retinaface_path = backends.model_path(model_base_path, "retinaface_640x640_opt.onnx")
+        self.retinaface = RetinaFaceDetector(model_path=retinaface_path, json_path=os.path.join(model_base_path, "priorbox_640x640.json"), threads=max(max_threads,4), top_k=max_faces, res=(640, 640))
+        self.retinaface_scan = RetinaFaceDetector(model_path=retinaface_path, json_path=os.path.join(model_base_path, "priorbox_640x640.json"), threads=2, top_k=max_faces, res=(640, 640))
         self.use_retinaface = use_retinaface
 
-        # OTR 1.9 and later requires specifying providers
-        # explicitly as an argument in InferenceSession()
-        providersList = onnxruntime.capi._pybind_state.get_available_providers()
+        lm_path = backends.model_path(model_base_path, model)
 
         # Single face instance with multiple threads
-        self.session = onnxruntime.InferenceSession(os.path.join(model_base_path, model), sess_options=options, providers=providersList)
+        self.session = backends.create_session(lm_path, threads=min(max_threads, 4))
 
         # Multiple faces with single threads
         self.sessions = []
         self.max_workers = max(min(max_threads, max_faces), 1)
         extra_threads = max_threads % self.max_workers
         for i in range(self.max_workers):
-            options = onnxruntime.SessionOptions()
-            options.inter_op_num_threads = 1
-            options.intra_op_num_threads = min(max(max_threads // self.max_workers, 4), 1)
-            if options.intra_op_num_threads < 1:
-                options.intra_op_num_threads = 1
-            elif i < extra_threads:
-                options.intra_op_num_threads += 1
-            options.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
-            options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-            self.sessions.append(onnxruntime.InferenceSession(os.path.join(model_base_path, model), sess_options=options, providers=providersList))
+            threads = 1  # same effective value as upstream (min(max(n, 4), 1) == 1)
+            if i < extra_threads:
+                threads += 1
+            self.sessions.append(backends.create_session(lm_path, threads=threads))
         self.input_name = self.session.get_inputs()[0].name
 
-        options = onnxruntime.SessionOptions()
-        options.inter_op_num_threads = 1
-        options.intra_op_num_threads = 1
-        options.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
-        options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-        options.log_severity_level = 3
-        self.gaze_model = onnxruntime.InferenceSession(os.path.join(model_base_path, "mnv3_gaze32_split_opt.onnx"), sess_options=options, providers=providersList)
-
-        self.detection = onnxruntime.InferenceSession(os.path.join(model_base_path, "mnv3_detection_opt.onnx"), sess_options=options, providers=providersList)
+        self.gaze_model = backends.create_session(backends.model_path(model_base_path, "mnv3_gaze32_split_opt.onnx"), threads=1, batch=2)
+        self.detection = backends.create_session(backends.model_path(model_base_path, "mnv3_detection_opt.onnx"), threads=1)
+        if not silent:
+            print(f"Inference backend: {backends.describe()}")
         self.faces = []
 
         # Image normalization constants
@@ -766,13 +748,31 @@ class Tracker():
 
         image_pts = np.array(lms)[face_info.contour_pts, 0:2]
 
-        success = False
-        if face_info.rotation is not None:
-            success, face_info.rotation, face_info.translation = cv2.solvePnP(face_info.contour, image_pts, self.camera, self.dist_coeffs, useExtrinsicGuess=True, rvec=np.transpose(face_info.rotation), tvec=np.transpose(face_info.translation), flags=cv2.SOLVEPNP_ITERATIVE)
+        # Upstream seeded solvePnP with an all-zero pose (z = 0). Old OpenCV builds walked from there
+        # to OpenSeeFace's solution, which has the face at NEGATIVE z (the face model is mirrored),
+        # e.g. t ~ (1, -3, -8). Current OpenCV (4.12 and 5.x) never leaves the zero guess, and
+        # solving without a guess lands on the mirrored z > 0 solution, which flips the head pose.
+        # So seed with the previous pose when it is a z < 0 solution, otherwise with t = (0, 0, -10),
+        # which converges to the same solution VTube Studio's original tracker produces (checked
+        # frame by frame on a recorded clip).
+        default_r = np.zeros((3, 1), np.float64)
+        default_t = np.array([[0.0], [0.0], [-10.0]], np.float64)
+
+        def solve_pnp(rvec0, tvec0):
+            ok, rvec, tvec = cv2.solvePnP(face_info.contour, image_pts, self.camera, self.dist_coeffs,
+                                          useExtrinsicGuess=True, rvec=rvec0.copy(), tvec=tvec0.copy(),
+                                          flags=cv2.SOLVEPNP_ITERATIVE)
+            return bool(ok) and float(np.ravel(tvec)[2]) < 0, rvec, tvec
+
+        have_guess = face_info.rotation is not None and face_info.translation is not None and float(np.ravel(face_info.translation)[2]) < 0
+        if have_guess:
+            success, rvec, tvec = solve_pnp(np.asarray(face_info.rotation, np.float64).reshape(3, 1),
+                                            np.asarray(face_info.translation, np.float64).reshape(3, 1))
+            if not success:
+                success, rvec, tvec = solve_pnp(default_r, default_t)
         else:
-            rvec = np.array([0, 0, 0], np.float32)
-            tvec = np.array([0, 0, 0], np.float32)
-            success, face_info.rotation, face_info.translation = cv2.solvePnP(face_info.contour, image_pts, self.camera, self.dist_coeffs, useExtrinsicGuess=True, rvec=rvec, tvec=tvec, flags=cv2.SOLVEPNP_ITERATIVE)
+            success, rvec, tvec = solve_pnp(default_r, default_t)
+        face_info.rotation, face_info.translation = rvec, tvec
 
         rotation = face_info.rotation
         translation = face_info.translation
@@ -783,8 +783,9 @@ class Tracker():
             face_info.translation = np.array([0.0, 0.0, 0.0], np.float32)
             return False, np.zeros(4), np.zeros(3), 99999., pts_3d, lms
         else:
-            face_info.rotation = np.transpose(face_info.rotation)
-            face_info.translation = np.transpose(face_info.translation)
+            # OpenCV >= 4.6 returns (3, 1) vectors even for 1D guesses; keep them flat
+            face_info.rotation = np.asarray(face_info.rotation, np.float64).reshape(3)
+            face_info.translation = np.asarray(face_info.translation, np.float64).reshape(3)
 
         rmat, _ = cv2.Rodrigues(rotation)
         inverse_rotation = np.linalg.inv(rmat)
